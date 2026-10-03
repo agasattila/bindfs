@@ -248,8 +248,10 @@ is a hidden entry, or lies below one, inside the source directory.
 Targets outside the source directory are not filtered.
 .IP \[u2022] 2
 Names of the form \fB.fuse_hidden\fP followed by 16 hexadecimal digits are
-never hidden. FUSE renames a file that is deleted while still open to such
-a name, which stays visible until the file is closed.
+never hidden, and with fuse\-t neither are names of the form \fB.nfs.\fP
+followed by 8 hexadecimal digits, a dot and 4 hexadecimal digits.
+A file that is deleted while still open is renamed to such a name, which
+stays visible until the file is closed.
 .IP \[u2022] 2
 Hiding applies to what is done through the mount. A process that changes
 the source directory directly at the same time can, for example, replace

@@ -47,25 +47,47 @@ static char *ascii_lower_dup(const char *s)
     return result;
 }
 
-/* libfuse renames a file that is unlinked while still open to
- * ".fuse_hidden%08x%08x" and unlinks that name when the file is released. */
-static bool is_fuse_hidden_name(const char *name)
+/* True if `s` consists of exactly `len` lower-case hex digits. */
+static bool is_lower_hex(const char *s, size_t len)
 {
-    static const char prefix[] = ".fuse_hidden";
-    const size_t prefix_len = sizeof(prefix) - 1;
-    const size_t hex_len = 16;
-
-    if (strncmp(name, prefix, prefix_len) != 0)
+    if (strlen(s) != len)
         return false;
-    name += prefix_len;
-    if (strlen(name) != hex_len)
-        return false;
-    for (size_t i = 0; i < hex_len; ++i) {
-        char c = name[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+    for (size_t i = 0; i < len; ++i) {
+        if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
             return false;
     }
     return true;
+}
+
+/*
+ * Names under which a file that is unlinked while still open is kept until
+ * it is released. They are created and removed through the mount, so they
+ * must never be filtered:
+ *
+ *   libfuse:  ".fuse_hidden%08x%08x"
+ *   fuse-t:   ".nfs.%08x.%04x" (the "silly rename" of the macOS NFS client
+ *             that fuse-t is built on)
+ */
+static bool is_temporary_name(const char *name)
+{
+    static const char fuse_prefix[] = ".fuse_hidden";
+    if (strncmp(name, fuse_prefix, sizeof(fuse_prefix) - 1) == 0)
+        return is_lower_hex(name + sizeof(fuse_prefix) - 1, 16);
+
+#ifdef HAVE_FUSE_T
+    static const char nfs_prefix[] = ".nfs.";
+    if (strncmp(name, nfs_prefix, sizeof(nfs_prefix) - 1) == 0) {
+        const char *p = name + sizeof(nfs_prefix) - 1;
+        char first[9];
+        if (strlen(p) != 8 + 1 + 4 || p[8] != '.')
+            return false;
+        memcpy(first, p, 8);
+        first[8] = '\0';
+        return is_lower_hex(first, 8) && is_lower_hex(p + 9, 4);
+    }
+#endif
+
+    return false;
 }
 
 static bool entry_matches_name(const struct FilterEntry *e, const char *name)
@@ -263,7 +285,7 @@ FFResult filefilter_match(const FileFilter *f, const char *name, FFType type)
 {
     bool needs_type = false;
 
-    if (filefilter_is_empty(f) || is_fuse_hidden_name(name))
+    if (filefilter_is_empty(f) || is_temporary_name(name))
         return FF_NO_MATCH;
 
     for (size_t i = 0; i < f->count; ++i) {

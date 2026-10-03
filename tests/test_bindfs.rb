@@ -1234,21 +1234,24 @@ testenv("'--file-filter=name-glob=.*'", :title => "file-filter: deleting an open
     File.write('src/keep', 'keep')
     touch('src/.dot')
     touch('src/.fuse_hidden_secret')
+    touch('src/.nfs.secret')
+
+    # The open file is kept under a temporary name until it is closed:
+    # libfuse uses .fuse_hidden<16 hex>, fuse-t (NFS) .nfs.<8 hex>.<4 hex>.
+    temporary = $fuse_t ? /\A\.nfs\.\h{8}\.\h{4}\z/ : /\A\.fuse_hidden\h{16}\z/
 
     assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
     File.open('mnt/keep') do |f|
         File.unlink('mnt/keep')
-        # libfuse keeps the open file under a temporary name until it is closed.
-        temporaries = Dir.entries('mnt').grep(/\A\.fuse_hidden\h{16}\z/)
-        assert { temporaries.size == 1 }
+        assert { Dir.entries('mnt').grep(temporary).size == 1 }
         assert { f.read == 'keep' }
     end
     # The temporary is removed when the handle is released, asynchronously.
     50.times do
-        break if Dir.entries('src').grep(/\A\.fuse_hidden\h{16}\z/).empty?
+        break if Dir.entries('src').grep(temporary).empty?
         sleep 0.1
     end
-    assert { Dir.entries('src').sort == ['.', '..', '.dot', '.fuse_hidden_secret'] }
+    assert { Dir.entries('src').sort == ['.', '..', '.dot', '.fuse_hidden_secret', '.nfs.secret'] }
 end
 
 ['symlink-first', 'target-first'].each do |policy|
