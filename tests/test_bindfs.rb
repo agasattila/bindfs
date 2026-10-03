@@ -43,7 +43,6 @@ $have_fuse_29 = !$have_fuse_3 && !$fuse_t && Proc.new do
   v = `pkg-config --modversion fuse`.split('.')
   raise "failed to get FUSE version with pkg-config" if v.size < 2
   v = v.map(&:to_i)
-  v = [2, 8, 0]
   v[0] > 2 || (v[0] == 2 && v[1] >= 9)
 end.call
 
