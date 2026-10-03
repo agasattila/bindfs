@@ -1094,12 +1094,17 @@ testenv("--file-filter=name=.zfs", :title => "file-filter: other files are unaff
     assert { File.read('src/d/b') == 'changed+' }
     File.symlink('b', 'mnt/d/link')
     assert { File.read('mnt/d/link') == 'changed+' }
-    File.link('mnt/d/b', 'mnt/d/hardlink')
-    assert { File.stat('mnt/d/hardlink').nlink == 2 }
+    # FreeBSD's fusefs reports EIO after creating a hard link, with or
+    # without filters.
+    if `uname`.strip != 'FreeBSD'
+        File.link('mnt/d/b', 'mnt/d/hardlink')
+        assert { File.stat('mnt/d/hardlink').nlink == 2 }
+        File.unlink('mnt/d/hardlink')
+    end
     mkdir('mnt/newdir')
     File.mkfifo('mnt/fifo')
     assert { File.pipe?('src/fifo') }
-    File.unlink('mnt/d/b', 'mnt/d/link', 'mnt/d/hardlink', 'mnt/fifo')
+    File.unlink('mnt/d/b', 'mnt/d/link', 'mnt/fifo')
     rmdir('mnt/d')
     rmdir('mnt/newdir')
     assert { Dir.entries('src').sort == ['.', '..', '.zfs'] }
