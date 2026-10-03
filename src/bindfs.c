@@ -91,6 +91,14 @@
 #include "rate_limiter.h"
 #include "userinfo.h"
 #include "usermap.h"
+#include "filter.h"
+
+/* renameat2() flag, from <linux/fs.h>. */
+#ifdef RENAME_EXCHANGE
+#define RENAME_EXCHANGE_FLAG RENAME_EXCHANGE
+#else
+#define RENAME_EXCHANGE_FLAG (1 << 1)
+#endif
 
 /* Socket file support for MacOS and FreeBSD */
 #if defined(__APPLE__) || defined(__FreeBSD__)
@@ -137,6 +145,8 @@ static struct Settings {
 
     RateLimiter *read_limiter;
     RateLimiter *write_limiter;
+
+    FileFilter *filefilter;
 
     enum CreatePolicy {
         CREATE_AS_USER,
@@ -226,7 +236,8 @@ static int is_mirroring_enabled(void);
 static int is_mirrored_user(uid_t uid);
 
 /* Processes the virtual path to a real path. Always free() the result. */
-static char *process_path(const char *path, bool resolve_symlinks);
+static char *process_path(const char *path, bool resolve_symlinks,
+                          enum FilterIntent intent, FFType new_type);
 
 /* The common parts of getattr and fgetattr. */
 static int getattr_common(const char *path, struct stat *stbuf);
@@ -380,8 +391,84 @@ static int is_mirrored_user(uid_t uid)
     return 0;
 }
 
-static char *process_path(const char *path, bool resolve_symlinks)
+/* Type lookup for the file filter. Relative paths are relative to the
+   source directory, which is the working directory once mounted. */
+static int filter_lstat(void *ctx, const char *path, FFType *type)
 {
+    struct stat st;
+    (void)ctx;
+    if (lstat(path, &st) == -1)
+        return errno;
+    *type = filefilter_type_from_mode(st.st_mode);
+    return 0;
+}
+
+/* Type lookup for a directory entry while listing the directory `ctx`. */
+static int filter_fstatat(void *ctx, const char *name, FFType *type)
+{
+    struct stat st;
+    if (fstatat(dirfd((DIR *)ctx), name, &st, AT_SYMLINK_NOFOLLOW) == -1)
+        return errno;
+    *type = filefilter_type_from_mode(st.st_mode);
+    return 0;
+}
+
+/* The type of an existing object, if any filter cares about types, for
+   operations that move or link it to a new name. */
+static FFType filter_type_of(const char *real_path)
+{
+    struct stat st;
+    if (!filefilter_has_typed(settings.filefilter) || lstat(real_path, &st) == -1)
+        return FFT_UNKNOWN;
+    return filefilter_type_from_mode(st.st_mode);
+}
+
+/* Checks a path as seen through the mount. Returns 0 or a positive errno. */
+static int filter_check(const char *path, enum FilterIntent intent, FFType new_type)
+{
+    return filefilter_check_path(settings.filefilter, path, intent, new_type,
+                                 &filter_lstat, NULL);
+}
+
+/*
+ * Checks a path produced by realpath(). If it lies inside the source
+ * directory, an object reached through a hidden entry must stay hidden,
+ * also when it is reached through a visible symlink. Paths outside the
+ * source directory are not filtered. Returns 0 or a positive errno.
+ */
+static int filter_check_resolved(const char *resolved)
+{
+    if (filefilter_is_empty(settings.filefilter) || settings.mntsrc == NULL)
+        return 0;
+
+    size_t mntsrc_len = strlen(settings.mntsrc);
+    if (!path_starts_with(resolved, settings.mntsrc, mntsrc_len))
+        return 0;
+
+    return filefilter_check_path(settings.filefilter, resolved + mntsrc_len,
+                                 FILTER_LOOKUP, FFT_UNKNOWN, &filter_lstat, NULL);
+}
+
+/*
+ * Converts a path from FUSE into a path in the source directory.
+ *
+ * This is also where file filters are enforced, so that no operation can
+ * get hold of a real path without passing them. `intent` says whether the
+ * operation uses an existing entry or creates (or replaces) one, and
+ * `new_type` is the type of what would be created, or FFT_UNKNOWN.
+ *
+ *   FUSE path --> filter check -------> realpath() -------> filter check
+ *                 (every component)     (if resolving        (if the result is
+ *                                        symlinks)            inside the source)
+ *
+ * Returns NULL and sets errno (ENOENT or EPERM for a filtered path) on
+ * failure.
+ */
+static char *process_path(const char *path, bool resolve_symlinks,
+                          enum FilterIntent intent, FFType new_type)
+{
+    int err;
+
     if (path == NULL) { /* possible? */
         errno = EINVAL;
         return NULL;
@@ -389,6 +476,12 @@ static char *process_path(const char *path, bool resolve_symlinks)
 
     while (*path == '/')
         ++path;
+
+    err = filter_check(path, intent, new_type);
+    if (err != 0) {
+        errno = err;
+        return NULL;
+    }
 
     if (*path == '\0')
         path = ".";
@@ -407,6 +500,10 @@ static char *process_path(const char *path, bool resolve_symlinks)
             DPRINTF("Denying recursive access to mountpoint \"%s\" at \"%s\"", settings.mntdest, result);
             free(result);
             errno = EPERM;
+            return NULL;
+        } else if ((err = filter_check_resolved(result)) != 0) {
+            free(result);
+            errno = err;
             return NULL;
         }
         return result;
@@ -571,7 +668,7 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
      if (settings.delete_deny)
         return -EPERM;
 
-    real_path = process_path(path, false);
+    real_path = process_path(path, false, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -597,12 +694,24 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
                     free(real_path);
                     return -errno;
                 }
+                /* Delete nothing if the target is hidden. */
+                if (also_try_delete != NULL && (res = filter_check_resolved(also_try_delete)) != 0) {
+                    free(also_try_delete);
+                    free(real_path);
+                    return -res;
+                }
                 break;
             case RESOLVED_SYMLINK_DELETION_TARGET_FIRST:
                 unlink_first = realpath(real_path, NULL);
                 if (unlink_first == NULL && errno != ENOENT) {
                     free(real_path);
                     return -errno;
+                }
+
+                if (unlink_first != NULL && (res = filter_check_resolved(unlink_first)) != 0) {
+                    free(unlink_first);
+                    free(real_path);
+                    return -res;
                 }
 
                 if (unlink_first != NULL) {
@@ -763,7 +872,7 @@ static int bindfs_getattr(const char *path, struct stat *stbuf)
     (void)fi;
 #endif
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -784,7 +893,7 @@ static int bindfs_fgetattr(const char *path, struct stat *stbuf,
     int res;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -803,7 +912,7 @@ static int bindfs_readlink(const char *path, char *buf, size_t size)
     int res;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -836,7 +945,7 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 #else
     bool readdirplus = false;
 #endif
-    char *real_path = process_path(path, true);
+    char *real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL) {
         return -errno;
     }
@@ -880,6 +989,13 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
         struct stat st;
 
+        /* Leave out hidden entries. The type is looked up only if a
+           type-restricted filter matches and d_type is DT_UNKNOWN. */
+        if (filefilter_hides_entry(settings.filefilter, de->d_name,
+                                   filefilter_type_from_dtype(de->d_type),
+                                   &filter_fstatat, dp))
+            continue;
+
         if ((settings.resolve_symlinks && de->d_type == DT_LNK) || readdirplus) {
             int file_len = strlen(de->d_name) + 1;  // (include null terminator)
             append_to_memory_block(&path_buf, de->d_name, file_len);
@@ -888,6 +1004,11 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                 char *resolved = realpath(path_buf.ptr, NULL);
 
                 if (resolved) {
+                    if (filter_check_resolved(resolved) != 0) {
+                        free(resolved);
+                        path_buf.size -= file_len;
+                        continue;
+                    }
                     if (lstat(resolved, &st) == -1) {
                         result = -errno;
                         free(resolved);
@@ -943,7 +1064,7 @@ static int bindfs_mknod(const char *path, mode_t mode, dev_t rdev)
     struct fuse_context *fc;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_CREATE, filefilter_type_from_mode(mode));
     if (real_path == NULL)
         return -errno;
 
@@ -997,7 +1118,7 @@ static int bindfs_mkdir(const char *path, mode_t mode)
     struct fuse_context *fc;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_CREATE, FFT_DIR);
     if (real_path == NULL)
         return -errno;
 
@@ -1036,7 +1157,8 @@ static int bindfs_symlink(const char *from, const char *to)
     if (settings.resolve_symlinks)
         return -EPERM;
 
-    real_to = process_path(to, false);
+    /* `from` is the link's contents, not a path in the mount. */
+    real_to = process_path(to, false, FILTER_CREATE, FFT_LNK);
     if (real_to == NULL)
         return -errno;
 
@@ -1065,15 +1187,27 @@ static int bindfs_rename(const char *from, const char *to)
     if (settings.rename_deny)
         return -EPERM;
 
-    real_from = process_path(from, false);
+    real_from = process_path(from, false, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_from == NULL)
         return -errno;
 
-    real_to = process_path(to, true);
+    real_to = process_path(to, true, FILTER_CREATE, filter_type_of(real_from));
     if (real_to == NULL) {
         free(real_from);
         return -errno;
     }
+
+#if defined(HAVE_FUSE_3) && defined(__NR_renameat2)
+    /* With RENAME_EXCHANGE, `from` receives the object from `to` too. */
+    if (flags & RENAME_EXCHANGE_FLAG) {
+        int err = filter_check(from, FILTER_CREATE, filter_type_of(real_to));
+        if (err != 0) {
+            free(real_from);
+            free(real_to);
+            return -err;
+        }
+    }
+#endif
 
 #ifdef HAVE_FUSE_3
 
@@ -1107,11 +1241,11 @@ static int bindfs_link(const char *from, const char *to)
     int res;
     char *real_from, *real_to;
 
-    real_from = process_path(from, true);
+    real_from = process_path(from, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_from == NULL)
         return -errno;
 
-    real_to = process_path(to, true);
+    real_to = process_path(to, true, FILTER_CREATE, filter_type_of(real_from));
     if (real_to == NULL) {
         free(real_from);
         return -errno;
@@ -1140,7 +1274,7 @@ static int bindfs_chmod(const char *path, mode_t mode)
     (void)fi;
 #endif
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1241,7 +1375,7 @@ static int bindfs_chown(const char *path, uid_t uid, gid_t gid)
     }
 
     if (uid != (uid_t)-1 || gid != (gid_t)-1) {
-        real_path = process_path(path, true);
+        real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
         if (real_path == NULL)
             return -errno;
 
@@ -1267,7 +1401,7 @@ static int bindfs_truncate(const char *path, off_t size)
     (void)fi;
 #endif
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1306,7 +1440,7 @@ static int bindfs_utimens(const char *path, const struct timespec ts[2])
     (void)fi;
 #endif
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1336,7 +1470,7 @@ static int bindfs_create(const char *path, mode_t mode, struct fuse_file_info *f
     struct fuse_context *fc;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_CREATE, FFT_REG);
     if (real_path == NULL)
         return -errno;
 
@@ -1369,11 +1503,15 @@ static int bindfs_open(const char *path, struct fuse_file_info *fi)
     int fd;
     char *real_path;
 
-    real_path = process_path(path, true);
+    int flags = fi->flags;
+
+    if (flags & O_CREAT)
+        real_path = process_path(path, true, FILTER_CREATE, FFT_REG);
+    else
+        real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
-    int flags = fi->flags;
 #ifdef __linux__
     if (!settings.forward_odirect) {
         flags &= ~O_DIRECT;
@@ -1515,7 +1653,7 @@ static int bindfs_statfs(const char *path, struct statvfs *stbuf)
     int res;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1533,7 +1671,7 @@ static int bindfs_statfs_x(const char *path, struct statfs *stbuf)
     int res;
     char *real_path;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1596,7 +1734,7 @@ static int bindfs_setxattr(const char *path, const char *name, const char *value
     if (settings.xattr_policy == XATTR_READ_ONLY)
         return -EACCES;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1638,7 +1776,7 @@ static int bindfs_getxattr(const char *path, const char *name, char *value,
 
     DPRINTF("getxattr %s %s", path, name);
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1668,7 +1806,7 @@ static int bindfs_listxattr(const char *path, char* list, size_t size)
 
     DPRINTF("listxattr %s", path);
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1721,7 +1859,7 @@ static int bindfs_removexattr(const char *path, const char *name)
     if (settings.xattr_policy == XATTR_READ_ONLY)
         return -EACCES;
 
-    real_path = process_path(path, true);
+    real_path = process_path(path, true, FILTER_LOOKUP, FFT_UNKNOWN);
     if (real_path == NULL)
         return -errno;
 
@@ -1835,7 +1973,13 @@ static void print_usage(const char *progname)
            "  --create-for-group=...    New files owned by specified group. *\n"
            "  --create-with-perms=...   Alter permissions of new files.\n"
            "\n"
-           "Chown policy:\n"
+           "File filtering policy:\n"
+           "  --file-filter=FILTER      Hide entries matching FILTER. Repeatable.\n"
+           "                            e.g. name=.zfs or type=dir:name-glob=*.tmp\n"
+           "\n",
+           progname);
+
+    printf("Chown policy:\n"
            "  --chown-normal            Try to chown the original files (the default).\n"
            "  --chown-ignore            Have all chowns fail silently.\n"
            "  --chown-deny              Have all chowns fail with 'permission denied'.\n"
@@ -1887,8 +2031,7 @@ static void print_usage(const char *progname)
            "  -f                        Foreground operation.\n"
            "\n"
            "(*: root only)\n"
-           "\n",
-           progname);
+           "\n");
 }
 
 
@@ -1900,6 +2043,7 @@ enum OptionKey {
     OPTKEY_FUSE_VERSION,
     OPTKEY_CREATE_AS_USER,
     OPTKEY_CREATE_AS_MOUNTER,
+    OPTKEY_FILE_FILTER,
     OPTKEY_CHOWN_NORMAL,
     OPTKEY_CHOWN_IGNORE,
     OPTKEY_CHOWN_DENY,
@@ -1992,6 +2136,19 @@ static int process_option(void *data, const char *arg, int key,
     case OPTKEY_CHMOD_ALLOW_X:
         settings.chmod_allow_x = 1;
         return 0;
+
+    case OPTKEY_FILE_FILTER:
+    {
+        /* Called once per --file-filter=... or -o file-filter=..., so
+           filters accumulate. */
+        const char *spec = strchr(arg, '=') + 1;
+        const char *err = NULL;
+        if (!filefilter_add_spec(settings.filefilter, spec, &err)) {
+            fprintf(stderr, "Error: invalid --file-filter '%s': %s\n", spec, err);
+            return -1;
+        }
+        return 0;
+    }
 
     case OPTKEY_XATTR_NONE:
         settings.xattr_policy = XATTR_UNIMPLEMENTED;
@@ -2387,6 +2544,8 @@ static void atexit_func(void)
     settings.usermap = NULL;
     usermap_destroy(settings.usermap_reverse);
     settings.usermap_reverse = NULL;
+    filefilter_destroy(settings.filefilter);
+    settings.filefilter = NULL;
     permchain_destroy(settings.permchain);
     settings.permchain = NULL;
     permchain_destroy(settings.create_permchain);
@@ -2505,6 +2664,7 @@ int main(int argc, char *argv[])
         OPT_OFFSET2("--map-group=%s", "map-group=%s", map_group, -1),
         OPT_OFFSET2("--map-passwd-rev=%s", "map-passwd-rev=%s", map_passwd_rev, -1),
         OPT_OFFSET2("--map-group-rev=%s", "map-group-rev=%s", map_group_rev, -1),
+        OPT2("--file-filter=", "file-filter=", OPTKEY_FILE_FILTER),
         OPT_OFFSET3("-n", "--no-allow-other", "no-allow-other", no_allow_other, -1),
 
         OPT_OFFSET2("--read-rate=%s", "read-rate=%s", read_rate, -1),
@@ -2569,6 +2729,7 @@ int main(int argc, char *argv[])
     settings.permchain = permchain_create();
     settings.usermap = usermap_create();
     settings.usermap_reverse = usermap_create();
+    settings.filefilter = filefilter_create();
     settings.read_limiter = NULL;
     settings.write_limiter = NULL;
     settings.new_uid = -1;
@@ -2764,6 +2925,7 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
+
 
     if (od.forward_odirect) {
 #ifdef __linux__

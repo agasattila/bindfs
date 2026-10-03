@@ -163,6 +163,100 @@ them completely.
 See \fB\%PERMISSION \%SPECIFICATION\fP below for details.
 
 
+.SH FILE FILTERING POLICY
+Entries of the source directory can be hidden from the mount.
+A hidden entry behaves as if it did not exist: it is not listed,
+accessing it or anything below it fails with \fBENOENT\fP, and creating,
+linking or renaming something to its name fails with \fBEPERM\fP.
+The hidden object can thus be neither read nor replaced through the mount.
+
+.TP
+.B \-\-file\-filter=\fIfilter\fP, \-o file\-filter=...
+Hides the entries that \fIfilter\fP matches.
+The option can be given several times; an entry is hidden if any of the
+filters matches it. If a filter is invalid, bindfs refuses to start.
+A filter has the form
+
+.RS
+.RS
+[\fBtype=\fP\fItype\fP\fB:\fP]...\fIkey\fP\fB=\fP\fIname\fP
+.RE
+
+where \fIkey\fP is one of
+
+.TP
+.B name
+the entry's name is \fIname\fP;
+.TP
+.B name\-glob
+the entry's name matches the shell wildcard pattern \fIname\fP
+(see \fBglob\fP(7));
+.TP
+.B iname, iname\-glob
+like \fBname\fP and \fBname\-glob\fP, but ignoring the case of ASCII letters.
+.PP
+and \fItype\fP restricts the filter to entries of one type:
+\fBfile\fP, \fBdir\fP, \fBsymlink\fP, \fBsocket\fP, \fBfifo\fP,
+\fBblock\fP or \fBchar\fP.
+Several \fBtype=\fP conditions may be given; any of them may match.
+Without one, entries of every type match.
+The type is that of the entry itself: a symlink is \fBtype=symlink\fP,
+also with \fB\-\-resolve\-symlinks\fP.
+
+Everything after the first \fBname=\fP, \fBname\-glob=\fP, \fBiname=\fP or
+\fBiname\-glob=\fP is the name, so names may contain \(oq:\(cq and
+\(oq=\(cq, and \fBtype=\fP conditions must come first.
+For example, \fIname=x:type=dir\fP hides entries literally named
+\(oqx:type=dir\(cq.
+
+Filters match the names of entries, at any depth of the tree, not paths:
+a name containing \(oq/\(cq is rejected.
+\(oq.\(cq and \(oq..\(cq cannot be hidden.
+In patterns, \(oq*\(cq and \(oq?\(cq also match a leading dot, and a
+backslash makes the next character literal.
+
+When a filter is restricted to certain types, creating, linking or
+renaming something to a matching name fails if either the object already
+there or the new object is of a hidden type.
+For example, with \fItype=file:name\-glob=*.png\fP,
+\fBtouch new.png\fP fails while \fBmkdir new.png\fP works.
+
+If the source directory is on a case\-insensitive filesystem
+(the default on macOS; ZFS with \fBcasesensitivity=insensitive\fP; vfat;
+exFAT), use the \fBiname\fP forms.
+Otherwise a hidden entry can still be opened by spelling its name
+with different letter case.
+
+In \fI/etc/fstab\fP and with \fB\-o\fP, the comma separates options, so a
+filter cannot contain a comma there.
+Use \fB\-\-file\-filter=\fP on the command line, or \fBname\-glob=\fP
+with \(oq?\(cq in place of the comma.
+.RE
+
+.PP
+Further notes on hidden entries:
+.IP \[u2022] 2
+Removing a directory whose remaining entries are all hidden fails with
+\fBENOTEMPTY\fP, as it would in the source directory.
+Renaming a directory moves the hidden entries in it along.
+.IP \[u2022] 2
+Filtering is by name. A hidden file that has another hard link with a
+visible name can be reached through that name.
+.IP \[u2022] 2
+With \fB\-\-resolve\-symlinks\fP, a symlink is hidden as well if its target
+is a hidden entry, or lies below one, inside the source directory.
+Targets outside the source directory are not filtered.
+.IP \[u2022] 2
+Names of the form \fB.fuse_hidden\fP followed by 16 hexadecimal digits are
+never hidden, and with fuse\-t neither are names of the form \fB.nfs.\fP
+followed by 8 hexadecimal digits, a dot and 4 hexadecimal digits.
+A file that is deleted while still open is renamed to such a name, which
+stays visible until the file is closed.
+.IP \[u2022] 2
+Hiding applies to what is done through the mount. A process that changes
+the source directory directly at the same time can, for example, replace
+an object between the moment bindfs checks a name and the moment it uses it.
+
 .SH CHOWN/CHGRP POLICY
 The behaviour on chown/chgrp calls can be changed. By default they are passed
 through to the source directory even if bindfs is set to show
@@ -530,11 +624,27 @@ and adds the user execute bit for directories and executables.
 Makes a directory read\-only and accessible only by the current user.
 
 .TP
+.B bindfs \-\-file\-filter=name=.zfs /tank/data /mnt/filtered
+
+Shows /tank/data without its .zfs snapshot directory.
+
+.TP
+.B bindfs \-\-file\-filter=type=dir:name=.virtfs_metadata \-\-file\-filter=iname=thumbs.db src mnt
+
+Hides every directory named .virtfs_metadata, and every Thumbs.db in any
+letter case.
+
+.TP
 .B /home/bob/shared /var/www/shared/bob  fuse.bindfs  perms=0000:u+rD   0   0
 
 An example \fI/etc/fstab\fP entry. Note that the colon must be used to
 separate arguments to perms, because the comma is an option separator in
 \fI/etc/fstab\fP.
+
+.TP
+.B /tank/data /mnt/filtered  fuse.bindfs  file\-filter=name=.zfs,file\-filter=name\-glob=*.bak   0   0
+
+An \fI/etc/fstab\fP entry with two file filters.
 
 .TP
 .B bindfs#/home/bob/shared /var/www/shared/bob  fuse perms=0000:u+rD   0   0

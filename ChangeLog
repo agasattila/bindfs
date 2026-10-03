@@ -1,3 +1,14 @@
+Unreleased
+
+	* Added --file-filter for hiding entries of the source directory,
+	  based on PR #108 by Nekun. A filter matches entry names,
+	  exactly, as a wildcard pattern, or ignoring case, optionally
+	  only for certain file types. The option can be repeated, e.g.
+	  --file-filter=name=.zfs --file-filter=type=dir:name-glob=*.tmp
+	  Hidden entries are not listed and cannot be accessed, created
+	  or replaced through the mount. See FILE FILTERING POLICY in the
+	  man page.
+
 2026-01-20  Martin Pärtel <martin dot partel at gmail dot com>
 	* Merged build fix for MacFUSE (PR #180, thanks @slonopotamus!)
 	* Released 1.18.4

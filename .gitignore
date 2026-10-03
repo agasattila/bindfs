@@ -40,11 +40,13 @@ tests/odirect_read
 tests/odirect_write
 tests/readdir_inode
 tests/test_dir_rewind
+tests/rename_exchange
 tests/utimens_nofollow
 tests/*.log
 tests/*.trs
 tests/internals/test_internals
 tests/internals/test_rate_limiter
+tests/internals/test_filter
 tests/internals/*.log
 tests/internals/*.trs
 tests/tmp_test_bindfs
