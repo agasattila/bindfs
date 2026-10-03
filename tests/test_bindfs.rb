@@ -30,21 +30,26 @@ require 'tempfile'
 
 include Errno
 
-$have_fuse_3 = Proc.new do
-  system("pkg-config --exists fuse3")
-  $?.success?
+# The FUSE version bindfs was compiled against, as [major, minor]. It comes
+# from the binary because pkg-config only says which libfuse development
+# files are installed, and there may be more than one.
+$bindfs_fuse_version = Proc.new do
+  out = `#{EXECUTABLE_PATH} --fuse-version`
+  m = out.match(/compile-time version (\d+)\.(\d+)/)
+  raise "failed to get the FUSE version from `bindfs --fuse-version`: #{out.inspect}" unless m
+  [m[1].to_i, m[2].to_i]
 end.call
+puts "Testing bindfs compiled against FUSE #{$bindfs_fuse_version.join('.')}"
+
+$have_fuse_3 = $bindfs_fuse_version[0] >= 3
+# The patch level is not part of the compile-time version, so this one
+# still asks pkg-config. It only matters with FUSE 3.
 $have_fuse_3_readdir_bug = $have_fuse_3 && Proc.new do
   system("pkg-config --max-version=3.10.1 fuse3")
   $?.success?
 end.call
 
-$have_fuse_29 = !$have_fuse_3 && !$fuse_t && Proc.new do
-  v = `pkg-config --modversion fuse`.split('.')
-  raise "failed to get FUSE version with pkg-config" if v.size < 2
-  v = v.map(&:to_i)
-  v[0] > 2 || (v[0] == 2 && v[1] >= 9)
-end.call
+$have_fuse_29 = !$have_fuse_3 && !$fuse_t && ($bindfs_fuse_version <=> [2, 9]) >= 0
 
 # FileUtils.chown turned out to be quite buggy in Ruby 1.8.7,
 # so we'll use File.chown instead.
