@@ -66,7 +66,6 @@
 #endif
 
 #include <libgen.h> // For dirname(), basename()
-#include <ftw.h> // For nftw() in --delete-filtered impl
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -137,7 +136,6 @@ static struct Settings {
     RateLimiter *write_limiter;
 
     FileFilter *filefilter;
-    int delete_filtered;
 
     enum CreatePolicy {
         CREATE_AS_USER,
@@ -613,14 +611,6 @@ static int chown_new_file(const char *path, struct fuse_context *fc, int (*chown
     return 0;
 }
 
-/* nftw() callback */
-int delete_recurse(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf)
-{
-    int (*delfunc)(const char*) = S_ISDIR(sb->st_mode) ? rmdir : unlink;
-
-    return delfunc(fpath) ? errno : 0;
-}
-
 static int delete_file(const char *path, int (*target_delete_func)(const char *)) {
     int res;
     char *real_path;
@@ -638,65 +628,6 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
 
     if (filefilter_check(real_path,0,NULL) == -1)
         return -errno;
-
-    /* Remove hidden with --file-filter files before rmdir(), to
-     * avoid ENOTEMPTY */
-    if (settings.delete_filtered && main_delete_func == rmdir) {
-        DIR *dp = NULL;
-        struct dirent *de = malloc(sizeof(struct dirent));
-        int e_cnt = 0, nf_cnt = 0;
-        char *e_path = strdup(real_path);
-        int e_path_len = strlen(e_path);
-
-        if (lstat(real_path,&st) == -1)
-            goto delfil_out;
-        if (!S_ISDIR(st.st_mode))
-            goto delfil_out;
-
-        if ((dp = opendir(real_path))) {
-            while ((de = readdir(dp))) {
-                if (strcmp(de->d_name,".") == 0 || strcmp(de->d_name,"..") == 0)
-                    continue;
-                e_cnt++;
-                if (filefilter_find_match(settings.filefilter,de->d_name,de->d_type << 12) == filefilter_status_notfound)
-                    nf_cnt++;
-            }
-
-            /* empty directory or non-filtered entries exists */
-            if(!e_cnt || nf_cnt)
-                goto delfil_out;
-
-            rewinddir(dp);
-            while ((de = readdir(dp))) {
-                /* should contain only filtered entries here, don't recheck */
-                if (strcmp(de->d_name,".") == 0 || strcmp(de->d_name,"..") == 0)
-                    continue;
-
-                e_path = realloc(e_path,e_path_len+strlen(de->d_name)+2);
-                if (e_path[e_path_len-1] != '/')
-                    e_path[e_path_len] = '/';
-                strcpy(e_path+e_path_len+1,de->d_name);
-                if (de->d_type == DT_DIR) {
-                    /* delete it recursively, don't follow symlinks */
-                    int ret = nftw(e_path,delete_recurse,8,FTW_DEPTH|FTW_MOUNT|FTW_PHYS);
-                    if (ret < 0)
-                        return -ENOTEMPTY;
-                    else if (ret > 0)
-                        return -ret;
-                } else {
-                    if (unlink(e_path) != 0)
-                        return -errno;
-                }
-            }
-        } else {
-            return -errno;
-        }
-delfil_out:
-        if (dp)
-            closedir(dp);
-        free(de);
-        free(e_path);
-    }
 
     if (settings.resolve_symlinks) {
         if (lstat(real_path, &st) == -1) {
@@ -2041,7 +1972,6 @@ static void print_usage(const char *progname)
            "File filtering policy:\n"
            "  --file-filter=FILTER      Hide entries matching FILTER. Repeatable.\n"
            "                            e.g. name=.zfs or type=dir:name-glob=*.tmp\n"
-           "  --delete-filtered         Remove hidden files in removing directory\n"
            "\n",
            progname);
 
@@ -2110,7 +2040,6 @@ enum OptionKey {
     OPTKEY_CREATE_AS_USER,
     OPTKEY_CREATE_AS_MOUNTER,
     OPTKEY_FILE_FILTER,
-    OPTKEY_DELETE_FILTERED,
     OPTKEY_CHOWN_NORMAL,
     OPTKEY_CHOWN_IGNORE,
     OPTKEY_CHOWN_DENY,
@@ -2216,10 +2145,6 @@ static int process_option(void *data, const char *arg, int key,
         }
         return 0;
     }
-
-    case OPTKEY_DELETE_FILTERED:
-        settings.delete_filtered = 1;
-        return 0;
 
     case OPTKEY_XATTR_NONE:
         settings.xattr_policy = XATTR_UNIMPLEMENTED;
@@ -2755,8 +2680,6 @@ int main(int argc, char *argv[])
         OPT2("--chgrp-ignore", "chgrp-ignore", OPTKEY_CHGRP_IGNORE),
         OPT2("--chgrp-deny", "chgrp-deny", OPTKEY_CHGRP_DENY),
 
-        OPT2("--delete-filtered", "delete-filtered", OPTKEY_DELETE_FILTERED),
-
         OPT2("--chmod-normal", "chmod-normal", OPTKEY_CHMOD_NORMAL),
         OPT2("--chmod-ignore", "chmod-ignore", OPTKEY_CHMOD_IGNORE),
         OPT2("--chmod-deny", "chmod-deny", OPTKEY_CHMOD_DENY),
@@ -2803,7 +2726,6 @@ int main(int argc, char *argv[])
     settings.usermap = usermap_create();
     settings.usermap_reverse = usermap_create();
     settings.filefilter = filefilter_create();
-    settings.delete_filtered = 0;
     settings.read_limiter = NULL;
     settings.write_limiter = NULL;
     settings.new_uid = -1;
@@ -3000,14 +2922,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (settings.delete_filtered && filefilter_is_empty(settings.filefilter)) {
-        fprintf(stderr, "Error: --delete-filtered must be used only with --file-filter specified\n");
-        return 1;
-    }
-    if (settings.delete_filtered && settings.delete_deny) {
-        fprintf(stderr, "Error: --delete-filtered is incompatible with --delete-deny\n");
-        return 1;
-    }
 
     if (od.forward_odirect) {
 #ifdef __linux__
