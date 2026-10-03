@@ -810,6 +810,8 @@ if $have_fuse_29 || $have_fuse_3
     raise "fcntl lock sharing test failed" unless $?.success?
   end unless $fuse_t
 
+  # Skipped with fuse-t: it does not make a second flock() through the
+  # mount conflict with the first one, which this test expects.
   testenv("--disable-lock-forwarding", :title => "no lock forwarding") do
     File.write('src/file', 'some contents for fcntl lockng')
 
@@ -829,7 +831,7 @@ if $have_fuse_29 || $have_fuse_3
     # fcntl locking
     system("#{$tests_dir}/fcntl_locker src/file mnt/file")
     raise "fcntl lock sharing test failed" unless $?.exitstatus == 1
-  end
+  end unless $fuse_t
 end # have_fuse_29
 
 # Issue #37
