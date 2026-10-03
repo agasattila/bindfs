@@ -40,6 +40,7 @@ tests/odirect_read
 tests/odirect_write
 tests/readdir_inode
 tests/test_dir_rewind
+tests/rename_exchange
 tests/utimens_nofollow
 tests/*.log
 tests/*.trs

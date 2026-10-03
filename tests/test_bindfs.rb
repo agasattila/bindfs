@@ -1018,6 +1018,298 @@ testenv("--file-filter=name=.zfs -o file-filter=name=other", :title => "--file-f
     assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
 end
 
+# Hidden entries behave as if they do not exist, and nothing done through
+# the mount can create, replace or remove them.
+testenv("--file-filter=name=.zfs", :title => "file-filter: hidden entries do not exist") do
+    mkdir_p('src/.zfs/snapshot')
+    File.write('src/.zfs/snapshot/secret', 'secret')
+    mkdir_p('src/sub/.zfs')
+    mkdir('src/dir')
+    File.write('src/visible.txt', 'visible')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'dir', 'sub', 'visible.txt'] }
+    assert { Dir.entries('mnt/sub').sort == ['.', '..'] }
+    assert { !File.exist?('mnt/.zfs') }
+    assert_exception(ENOENT) { File.lstat('mnt/.zfs') }
+    assert_exception(ENOENT) { File.read('mnt/.zfs/snapshot/secret') }
+    assert_exception(ENOENT) { File.lstat('mnt/.zfs/snapshot') }
+    assert_exception(ENOENT) { Dir.entries('mnt/sub/.zfs') }
+    assert_exception(ENOENT) { File.rename('mnt/.zfs', 'mnt/zfs') }
+    assert_exception(ENOENT) { File.rename('mnt/.zfs/snapshot', 'mnt/snapshot') }
+    assert_exception(ENOENT) { File.unlink('mnt/.zfs/snapshot/secret') }
+    assert_exception(ENOENT) { rmdir('mnt/.zfs/snapshot') }
+
+    # A visible symlink cannot be followed into a hidden directory.
+    File.symlink('.zfs/snapshot/secret', 'mnt/link')
+    assert_exception(ENOENT) { File.read('mnt/link') }
+
+    # Only hidden entries left: the directory is still not empty.
+    assert_exception(ENOTEMPTY) { rmdir('mnt/sub') }
+
+    assert { File.read('src/.zfs/snapshot/secret') == 'secret' }
+    assert { File.directory?('src/sub/.zfs') }
+end
+
+testenv("--file-filter=name=.zfs", :title => "file-filter: hidden names cannot be created or replaced") do
+    mkdir_p('src/.zfs/snapshot')
+    File.write('src/.zfs/snapshot/secret', 'secret')
+    mkdir('src/dir')
+    File.write('src/file', 'file')
+
+    assert_exception(EPERM) { mkdir('mnt/.zfs') }
+    assert_exception(EPERM) { mkdir('mnt/dir/.zfs') }
+    assert_exception(EPERM) { File.open('mnt/dir/.zfs', 'w') {} }
+    assert_exception(EPERM) { File.mkfifo('mnt/dir/.zfs') }
+    assert_exception(EPERM) { File.symlink('file', 'mnt/.zfs') }
+    assert_exception(EPERM) { File.symlink('file', 'mnt/dir/.zfs') }
+    assert_exception(EPERM) { File.link('mnt/file', 'mnt/.zfs') }
+    assert_exception(EPERM) { File.link('mnt/file', 'mnt/dir/.zfs') }
+    assert_exception(EPERM) { File.rename('mnt/file', 'mnt/.zfs') }
+    assert_exception(EPERM) { File.rename('mnt/dir', 'mnt/.zfs') }
+    assert_exception(EPERM) { File.rename('mnt/file', 'mnt/dir/.zfs') }
+
+    assert { File.read('src/.zfs/snapshot/secret') == 'secret' }
+    assert { Dir.entries('src/.zfs').sort == ['.', '..', 'snapshot'] }
+    assert { Dir.entries('src/dir').sort == ['.', '..'] }
+    assert { File.read('src/file') == 'file' }
+end
+
+testenv("--file-filter=name=.zfs", :title => "file-filter: other files are unaffected") do
+    mkdir('src/.zfs')
+    File.write('src/a', 'a')
+    mkdir('src/d')
+
+    assert { File.read('mnt/a') == 'a' }
+    File.write('mnt/a', 'changed')
+    assert { File.read('src/a') == 'changed' }
+    File.open('mnt/a', 'a') { |f| f.write('+') }
+    assert { File.read('mnt/a') == 'changed+' }
+    File.rename('mnt/a', 'mnt/d/b')
+    assert { File.read('src/d/b') == 'changed+' }
+    File.symlink('b', 'mnt/d/link')
+    assert { File.read('mnt/d/link') == 'changed+' }
+    File.link('mnt/d/b', 'mnt/d/hardlink')
+    assert { File.stat('mnt/d/hardlink').nlink == 2 }
+    mkdir('mnt/newdir')
+    File.mkfifo('mnt/fifo')
+    assert { File.pipe?('src/fifo') }
+    File.unlink('mnt/d/b', 'mnt/d/link', 'mnt/d/hardlink', 'mnt/fifo')
+    rmdir('mnt/d')
+    rmdir('mnt/newdir')
+    assert { Dir.entries('src').sort == ['.', '..', '.zfs'] }
+    assert { Dir.entries('mnt').sort == ['.', '..'] }
+end
+
+testenv("--file-filter=name=.zfs", :title => "file-filter: renaming a directory moves its hidden entries") do
+    mkdir_p('src/d/.zfs')
+
+    File.rename('mnt/d', 'mnt/e')
+    assert { File.directory?('src/e/.zfs') }
+    assert { Dir.entries('mnt/e').sort == ['.', '..'] }
+end
+
+testenv("--file-filter=name=hidden", :title => "file-filter: a second hard link stays visible") do
+    File.write('src/hidden', 'data')
+    File.link('src/hidden', 'src/alias')
+
+    assert_exception(ENOENT) { File.read('mnt/hidden') }
+    assert { File.read('mnt/alias') == 'data' }
+end
+
+testenv("'--file-filter=name-glob=*.tmp' '--file-filter=name-glob=[ab]?'", :title => "file-filter: name-glob") do
+    touch('src/x.tmp')
+    touch('src/.tmp')
+    touch('src/x.tmp2')
+    touch('src/a1')
+    touch('src/c1')
+    touch('src/a12')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'a12', 'c1', 'x.tmp2'] }
+    assert_exception(EPERM) { touch('mnt/new.tmp') }
+    touch('mnt/new.txt')
+end
+
+testenv("'--file-filter=name=*' '--file-filter=name=x:type=dir'", :title => "file-filter: name= is literal") do
+    touch('src/*')
+    touch('src/x:type=dir')
+    mkdir('src/x')
+    touch('src/other')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'other', 'x'] }
+end
+
+testenv("'--file-filter=name-glob=*'", :title => "file-filter: everything hidden, root still usable") do
+    touch('src/a')
+    mkdir('src/b')
+
+    assert { File.directory?('mnt') }
+    assert { Dir.entries('mnt').sort == ['.', '..'] }
+    assert_exception(EPERM) { touch('mnt/c') }
+end
+
+testenv("--file-filter=iname=.zfs --file-filter=name=CaseSensitive", :title => "file-filter: iname") do
+    mkdir('src/.ZFS')
+    touch('src/casesensitive')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'casesensitive'] }
+    assert_exception(ENOENT) { File.lstat('mnt/.ZFS') }
+    assert_exception(ENOENT) { File.lstat('mnt/.zfs') }
+    assert_exception(EPERM) { mkdir('mnt/.Zfs') }
+end
+
+testenv("--file-filter=name=a,b '-o' 'file-filter=name-glob=c?d'", :title => "file-filter: names with a comma") do
+    touch('src/a,b')
+    touch('src/c,d')
+    touch('src/keep')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
+end
+
+testenv("--file-filter=type=file:name-glob=*.png --file-filter=type=dir:name=cache --file-filter=type=symlink:name-glob=*.lnk",
+        :title => "file-filter: type= hides only the given types") do
+    touch('src/a.png')
+    mkdir('src/dir.png')
+    mkdir('src/cache')
+    touch('src/sub_cache')
+    File.write('src/file', 'file')
+    mkdir('src/d')
+    touch('src/d/cache')
+    File.symlink('file', 'src/l.lnk')
+    touch('src/f.lnk')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'd', 'dir.png', 'f.lnk', 'file', 'sub_cache'] }
+    assert { Dir.entries('mnt/d').sort == ['.', '..', 'cache'] }
+    assert_exception(ENOENT) { File.lstat('mnt/a.png') }
+    assert_exception(ENOENT) { File.lstat('mnt/l.lnk') }
+    assert_exception(ENOENT) { File.lstat('mnt/cache') }
+    assert { File.directory?('mnt/dir.png') }
+
+    # Creating: the type of the new object decides.
+    assert_exception(EPERM) { touch('mnt/new.png') }
+    mkdir('mnt/newdir.png')
+    assert_exception(EPERM) { mkdir('mnt/cache') }
+    assert_exception(EPERM) { File.symlink('file', 'mnt/new.lnk') }
+    touch('mnt/new.lnk')
+end
+
+testenv("--file-filter=type=fifo:name=x", :title => "file-filter: a hidden object of one type cannot be replaced by another") do
+    File.mkfifo('src/x')
+    File.write('src/reg', 'reg')
+    mkdir('src/dir')
+
+    assert_exception(ENOENT) { File.lstat('mnt/x') }
+    assert_exception(EPERM) { File.rename('mnt/reg', 'mnt/x') }
+    assert_exception(EPERM) { File.rename('mnt/dir', 'mnt/x') }
+    assert_exception(EPERM) { mkdir('mnt/x') }
+    assert_exception(EPERM) { File.open('mnt/x', 'w') {} }
+    assert_exception(EPERM) { File.symlink('reg', 'mnt/x') }
+    assert_exception(EPERM) { File.link('mnt/reg', 'mnt/x') }
+    assert { File.pipe?('src/x') }
+    assert { File.read('src/reg') == 'reg' }
+end
+
+testenv("--file-filter=type=file:name=x", :title => "file-filter: a visible object cannot be replaced by a hidden one") do
+    File.mkfifo('src/x')
+    File.write('src/reg', 'reg')
+    mkdir('src/dir')
+
+    assert { File.pipe?('mnt/x') }
+    assert_exception(EPERM) { File.rename('mnt/reg', 'mnt/x') }
+    assert { File.pipe?('src/x') }
+    assert { File.read('src/reg') == 'reg' }
+
+    # Replacing it with something that stays visible is fine.
+    File.unlink('mnt/x')
+    File.rename('mnt/dir', 'mnt/x')
+    assert { File.directory?('src/x') }
+end
+
+testenv("'--file-filter=name-glob=.*'", :title => "file-filter: deleting an open file under a dotfile filter") do
+    File.write('src/keep', 'keep')
+    touch('src/.dot')
+    touch('src/.fuse_hidden_secret')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
+    File.open('mnt/keep') do |f|
+        File.unlink('mnt/keep')
+        # libfuse keeps the open file under a temporary name until it is closed.
+        temporaries = Dir.entries('mnt').grep(/\A\.fuse_hidden\h{16}\z/)
+        assert { temporaries.size == 1 }
+        assert { f.read == 'keep' }
+    end
+    # The temporary is removed when the handle is released, asynchronously.
+    50.times do
+        break if Dir.entries('src').grep(/\A\.fuse_hidden\h{16}\z/).empty?
+        sleep 0.1
+    end
+    assert { Dir.entries('src').sort == ['.', '..', '.dot', '.fuse_hidden_secret'] }
+end
+
+['symlink-first', 'target-first'].each do |policy|
+    testenv("--file-filter=name=.zfs --resolve-symlinks --resolved-symlink-deletion=#{policy}",
+            :title => "file-filter: --resolve-symlinks with deletion policy #{policy}") do
+        mkdir('src/.zfs')
+        File.write('src/.zfs/secret', 'secret')
+        File.write('src/file', 'file')
+        File.symlink('.zfs/secret', 'src/relative')
+        File.symlink(File.realpath('src/.zfs/secret'), 'src/absolute')
+        File.symlink('file', 'src/fine')
+
+        assert { Dir.entries('mnt').sort == ['.', '..', 'file', 'fine'] }
+        assert_exception(ENOENT) { File.read('mnt/relative') }
+        assert_exception(ENOENT) { File.read('mnt/absolute') }
+        assert_exception(ENOENT) { File.unlink('mnt/relative') }
+        assert_exception(ENOENT) { File.unlink('mnt/absolute') }
+        assert { File.read('mnt/fine') == 'file' }
+
+        assert { File.read('src/.zfs/secret') == 'secret' }
+        assert { File.symlink?('src/relative') && File.symlink?('src/absolute') }
+    end
+end
+
+testenv("--file-filter=name=.zfs", :title => "file-filter: RENAME_EXCHANGE") do
+    mkdir('src/.zfs')
+    File.write('src/a', 'a')
+    File.write('src/b', 'b')
+
+    out = `#{$tests_dir}/rename_exchange mnt/a mnt/b`
+    if $?.success?
+        assert { File.read('src/a') == 'b' && File.read('src/b') == 'a' }
+        assert { `#{$tests_dir}/rename_exchange mnt/a mnt/.zfs`.strip == 'ENOENT' }
+        assert { `#{$tests_dir}/rename_exchange mnt/.zfs mnt/a`.strip == 'ENOENT' }
+        assert { File.read('src/a') == 'b' }
+    else
+        # FUSE 2, or no renameat2: exchanging is not possible at all.
+        puts "(RENAME_EXCHANGE not supported here: #{out.strip})"
+        assert { !system("#{$tests_dir}/rename_exchange mnt/a mnt/.zfs > /dev/null") }
+        assert { !system("#{$tests_dir}/rename_exchange mnt/.zfs mnt/a > /dev/null") }
+        assert { File.read('src/a') == 'a' }
+    end
+    assert { File.directory?('src/.zfs') }
+    assert { Dir.entries('src/.zfs').sort == ['.', '..'] }
+end
+
+testenv("--file-filter=type=file:name=x", :title => "file-filter: RENAME_EXCHANGE with type=") do
+    File.mkfifo('src/x')
+    File.write('src/a', 'a')
+    File.write('src/b', 'b')
+
+    supported = system("#{$tests_dir}/rename_exchange mnt/a mnt/b > /dev/null")
+    puts "(RENAME_EXCHANGE not supported here)" unless supported
+
+    # Either direction would put a regular file under the hidden name x.
+    first = `#{$tests_dir}/rename_exchange mnt/a mnt/x`.strip
+    second = `#{$tests_dir}/rename_exchange mnt/x mnt/a`.strip
+    if supported
+        assert { first == 'EPERM' }
+        assert { second == 'EPERM' }
+    else
+        assert { first != '' && second != '' }
+    end
+    assert { File.pipe?('src/x') }
+    assert { File.read('src/a') == (supported ? 'b' : 'a') }
+end
+
 bindfs_rejects("--file-filter=.zfs", "invalid --file-filter '.zfs'")
 bindfs_rejects("--file-filter=nmae=x", "invalid --file-filter 'nmae=x'")
 bindfs_rejects("--file-filter=name=", "empty name")
