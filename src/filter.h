@@ -123,19 +123,4 @@ FFType filefilter_type_from_mode(mode_t mode);
  * DT_UNKNOWN and on platforms without d_type. */
 FFType filefilter_type_from_dtype(unsigned char d_type);
 
-
-/*
- * Transitional API, used by bindfs.c until its per-operation checks are
- * reworked. Do not use in new code.
- */
-
-typedef enum FileFilterStatus {
-    filefilter_status_found = -1,
-    filefilter_status_notfound = 1,
-    filefilter_status_incorrect_name = 2,
-    filefilter_status_incorrect_mode = 3
-} FFStatus;
-
-FFStatus filefilter_find_match(const FileFilter *f, const char *fn, mode_t type);
-
 #endif

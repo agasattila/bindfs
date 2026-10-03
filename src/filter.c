@@ -432,19 +432,3 @@ FFType filefilter_type_from_dtype(unsigned char d_type)
 #endif
 }
 
-
-/* Transitional API, see filter.h. */
-
-FFStatus filefilter_find_match(const FileFilter *f, const char *fn, mode_t type)
-{
-    FFType type_b = filefilter_type_from_mode(type);
-
-    if (strlen(fn) == 0)
-        return filefilter_status_incorrect_name;
-
-    if (type_b == FFT_UNKNOWN)
-        return filefilter_status_incorrect_mode;
-
-    return filefilter_match(f, fn, type_b) == FF_MATCH
-        ? filefilter_status_found : filefilter_status_notfound;
-}
