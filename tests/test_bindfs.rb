@@ -524,7 +524,8 @@ testenv("", :title => "preserves inode numbers") do
     assert { File.stat('mnt/dir').ino == File.stat('src/dir').ino }
 end
 
-if $bindfs_fuse_major >= 3 && !$have_fuse_3_readdir_bug  # https://github.com/libfuse/libfuse/issues/583
+# Not on FreeBSD: there the inode numbers in readdir differ from the source's.
+if $bindfs_fuse_major >= 3 && !$have_fuse_3_readdir_bug && `uname`.strip != 'FreeBSD'  # https://github.com/libfuse/libfuse/issues/583
     testenv("", :title => "preserves readdir inode numbers") do
         touch('src/file')
         mkdir('src/dir')
