@@ -181,7 +181,7 @@ static void spec_parsing_suite(void)
 
     expect_spec_rejected("");
     expect_spec_rejected(".zfs");
-    expect_spec_rejected("nmae=x");
+    expect_spec_rejected("label=x");
     expect_spec_rejected("NAME=x");
     expect_spec_rejected("name");
     expect_spec_rejected("name=");
