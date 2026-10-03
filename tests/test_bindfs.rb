@@ -1311,7 +1311,7 @@ testenv("--file-filter=type=file:name=x", :title => "file-filter: RENAME_EXCHANG
 end
 
 bindfs_rejects("--file-filter=.zfs", "invalid --file-filter '.zfs'")
-bindfs_rejects("--file-filter=nmae=x", "invalid --file-filter 'nmae=x'")
+bindfs_rejects("--file-filter=label=x", "invalid --file-filter 'label=x'")
 bindfs_rejects("--file-filter=name=", "empty name")
 bindfs_rejects("--file-filter=type=dir", "invalid --file-filter 'type=dir'")
 bindfs_rejects("--file-filter=type=folder:name=x", "unknown file type")
