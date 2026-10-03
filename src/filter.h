@@ -125,26 +125,17 @@ FFType filefilter_type_from_dtype(unsigned char d_type);
 
 
 /*
- * Transitional API, used by bindfs.c until its option parsing and its
- * per-operation checks are reworked. Do not use in new code.
+ * Transitional API, used by bindfs.c until its per-operation checks are
+ * reworked. Do not use in new code.
  */
-
-#define FF_FN_LIMIT 8192
 
 typedef enum FileFilterStatus {
     filefilter_status_found = -1,
-    filefilter_status_ok = 0,
     filefilter_status_notfound = 1,
     filefilter_status_incorrect_name = 2,
-    filefilter_status_incorrect_mode = 3,
-    filefilter_status_addfail = 4,
-    filefilter_status_dupfound = 5
+    filefilter_status_incorrect_mode = 3
 } FFStatus;
 
-extern const char *ffstatus_str_arr[];
-#define ffstatus_str(s) ffstatus_str_arr[(s)+1]
-
-FFStatus filefilter_add(FileFilter *f, const char *spec, FFType type);
 FFStatus filefilter_find_match(const FileFilter *f, const char *fn, mode_t type);
 
 #endif

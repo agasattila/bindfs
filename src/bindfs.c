@@ -2039,10 +2039,13 @@ static void print_usage(const char *progname)
            "  --create-with-perms=...   Alter permissions of new files.\n"
            "\n"
            "File filtering policy:\n"
-           "  --file-filter=*.png/...   Hide files in target filesystem.\n"
+           "  --file-filter=FILTER      Hide entries matching FILTER. Repeatable.\n"
+           "                            e.g. name=.zfs or type=dir:name-glob=*.tmp\n"
            "  --delete-filtered         Remove hidden files in removing directory\n"
-           "\n"
-           "Chown policy:\n"
+           "\n",
+           progname);
+
+    printf("Chown policy:\n"
            "  --chown-normal            Try to chown the original files (the default).\n"
            "  --chown-ignore            Have all chowns fail silently.\n"
            "  --chown-deny              Have all chowns fail with 'permission denied'.\n"
@@ -2094,8 +2097,7 @@ static void print_usage(const char *progname)
            "  -f                        Foreground operation.\n"
            "\n"
            "(*: root only)\n"
-           "\n",
-           progname);
+           "\n");
 }
 
 
@@ -2107,6 +2109,7 @@ enum OptionKey {
     OPTKEY_FUSE_VERSION,
     OPTKEY_CREATE_AS_USER,
     OPTKEY_CREATE_AS_MOUNTER,
+    OPTKEY_FILE_FILTER,
     OPTKEY_DELETE_FILTERED,
     OPTKEY_CHOWN_NORMAL,
     OPTKEY_CHOWN_IGNORE,
@@ -2200,6 +2203,19 @@ static int process_option(void *data, const char *arg, int key,
     case OPTKEY_CHMOD_ALLOW_X:
         settings.chmod_allow_x = 1;
         return 0;
+
+    case OPTKEY_FILE_FILTER:
+    {
+        /* Called once per --file-filter=... or -o file-filter=..., so
+           filters accumulate. */
+        const char *spec = strchr(arg, '=') + 1;
+        const char *err = NULL;
+        if (!filefilter_add_spec(settings.filefilter, spec, &err)) {
+            fprintf(stderr, "Error: invalid --file-filter '%s': %s\n", spec, err);
+            return -1;
+        }
+        return 0;
+    }
 
     case OPTKEY_DELETE_FILTERED:
         settings.delete_filtered = 1;
@@ -2529,109 +2545,6 @@ fail:
     return 0;
 }
 
-static int parse_file_filter(FileFilter *filter, char *spec)
-{
-    char *p;
-    enum { FN,SLASH,MODE } cpos;
-    FFType type;
-    FFStatus ret;
-    char *fn = NULL;
-    char *sl_p,*col_p;
-    int fn_pos = 0;
-    char next;
-
-    if (strlen(spec) < 1) {
-        fprintf(stderr,"Pattern string not specified\n");
-        return 0;
-    }
-
-    /* Glob pattern might be longer than NAME_MAX, so don't use it
-     * as a limit. But in the other side, ARG_MAX on Linux is 2MB,
-     * which might be expensive to alloc on, e.g., embedded systems,
-     * so let's define some "reasonable" value */
-    fn = malloc(FF_FN_LIMIT);
-    fn_pos = 0;
-
-    for (p = spec, cpos = SLASH; *p; p++) {
-        next = *(p+1);
-
-        if (cpos == SLASH) {
-            if (p == spec && *p != '/')
-                p--;
-
-            sl_p = strchr(p+1,'/');
-            col_p = strchr(p+1,':');
-
-            if (col_p && ( (!sl_p && col_p) || (sl_p > col_p) )) {
-                type = 0;
-                cpos = MODE;
-                continue;
-            } else {
-                type = FFT_ANY;
-                cpos = FN;
-                continue;
-            }
-        }
-
-        if (cpos == MODE) {
-            switch(*p) {
-            case 'a': type = FFT_ANY; break;
-            case 's': type |= FFT_SCK; break;
-            case 'l': type |= FFT_LNK; break;
-            case 'r': type |= FFT_REG; break;
-            case 'b': type |= FFT_BLK; break;
-            case 'd': type |= FFT_DIR; break;
-            case 'c': type |= FFT_CHR; break;
-            case 'p': type |= FFT_PIP; break;
-
-            case ':':
-                if (next == '/' || next == '\0') {
-                    fprintf(stderr,"Invalid syntax: matching pattern not specified after mode specifier\n");
-                    goto fail;
-                }
-                cpos = FN;
-                continue;
-                break;
-            default:
-                fprintf(stderr,"Invalid syntax: '%c' is not a valid mode token\n",*p);
-                goto fail;
-                break;
-            }
-        }
-
-        if (cpos == FN) {
-            if (fn_pos >= FF_FN_LIMIT-1) {
-                fprintf(stderr,"Filename pattern too long\n");
-                goto fail;
-            }
-            if (*p == '/' || *p == '\0') {
-                fprintf(stderr,"Empty filename pattern\n");
-                goto fail;
-            }
-
-            fn[fn_pos++] = *p;
-            if (next == '/' || next == '\0') {
-                fn[fn_pos] = '\0';
-                if ((ret = filefilter_add(settings.filefilter,fn,type)) != filefilter_status_ok) {
-                    fprintf(stderr,"Inserting filter spec '%s' failed: %s\n",fn,ffstatus_str(ret));
-                    goto fail;
-                }
-                fn_pos = 0;
-                free(fn);
-                fn = malloc(FF_FN_LIMIT);
-                cpos = SLASH;
-                continue;
-            }
-        }
-    }
-
-    free(fn);
-    return 1;
-fail:
-    free(fn);
-    return 0;
-}
-
 static void maybe_stdout_stderr_to_file(void)
 {
     /* TODO: make this a command line option. */
@@ -2776,7 +2689,6 @@ int main(int argc, char *argv[])
         char *map_group;
         char *map_passwd_rev;
         char *map_group_rev;
-        char *file_filter;
         char *read_rate;
         char *write_rate;
         char *create_for_user;
@@ -2823,7 +2735,7 @@ int main(int argc, char *argv[])
         OPT_OFFSET2("--map-group=%s", "map-group=%s", map_group, -1),
         OPT_OFFSET2("--map-passwd-rev=%s", "map-passwd-rev=%s", map_passwd_rev, -1),
         OPT_OFFSET2("--map-group-rev=%s", "map-group-rev=%s", map_group_rev, -1),
-        OPT_OFFSET2("--file-filter=%s", "file-filter=%s", file_filter, -1),
+        OPT2("--file-filter=", "file-filter=", OPTKEY_FILE_FILTER),
         OPT_OFFSET3("-n", "--no-allow-other", "no-allow-other", no_allow_other, -1),
 
         OPT_OFFSET2("--read-rate=%s", "read-rate=%s", read_rate, -1),
@@ -3088,14 +3000,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Parse file filtering policy */
-    if (od.file_filter) {
-        if (!parse_file_filter(settings.filefilter,od.file_filter)) {
-            /* parse_file_filter() returned an error */
-            return 1;
-        }
-    }
-    if (settings.delete_filtered && !od.file_filter) {
+    if (settings.delete_filtered && filefilter_is_empty(settings.filefilter)) {
         fprintf(stderr, "Error: --delete-filtered must be used only with --file-filter specified\n");
         return 1;
     }

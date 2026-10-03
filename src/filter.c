@@ -435,41 +435,6 @@ FFType filefilter_type_from_dtype(unsigned char d_type)
 
 /* Transitional API, see filter.h. */
 
-const char *ffstatus_str_arr[] = {
-    [1+filefilter_status_found] = "Matching pattern found",
-    [1+filefilter_status_ok] = "Success",
-    [1+filefilter_status_notfound] = "Matching pattern not found",
-    [1+filefilter_status_incorrect_name] = "Incorrect matching pattern",
-    [1+filefilter_status_incorrect_mode] = "Incorrect file type",
-    [1+filefilter_status_addfail] = "Inserting pattern failed",
-    [1+filefilter_status_dupfound] = "Duplicate found"
-};
-
-FFStatus filefilter_add(FileFilter *f, const char *spec, FFType type)
-{
-    if (strlen(spec) == 0)
-        return filefilter_status_incorrect_name;
-
-    if (!(type & FFT_ANY))
-        return filefilter_status_incorrect_mode;
-
-    if (strchr(spec, '/'))
-        return filefilter_status_incorrect_name;
-
-    char *pattern = strdup(spec);
-    if (pattern == NULL)
-        return filefilter_status_addfail;
-
-    /* A spec is taken to be a glob(7) pattern if it contains any wildcard
-     * character, escaped or not. */
-    bool glob = strpbrk(spec, "*?[]") != NULL;
-
-    if (!add_entry(f, pattern, glob, false, type & FFT_ANY))
-        return filefilter_status_addfail;
-
-    return filefilter_status_ok;
-}
-
 FFStatus filefilter_find_match(const FileFilter *f, const char *fn, mode_t type)
 {
     FFType type_b = filefilter_type_from_mode(type);

@@ -203,6 +203,50 @@ def testenv(bindfs_args, options = {}, &block)
     end
 end
 
+# Checks that bindfs refuses to start with the given arguments, prints an
+# error containing `expected_message` and does not mount anything.
+def bindfs_rejects(bindfs_args, expected_message)
+    puts "--- #{bindfs_args} (must be rejected) ---"
+
+    begin
+        FileUtils.mkdir_p "#{TESTDIR_NAME}/src"
+        FileUtils.mkdir_p "#{TESTDIR_NAME}/mnt"
+        Dir.chdir TESTDIR_NAME
+    rescue Exception => ex
+        fail!("ERROR preparing testdir at #{TESTDIR_NAME}", ex)
+    end
+
+    output = `../#{EXECUTABLE_PATH} #{bindfs_args} src mnt 2>&1`
+    status = $?
+    mounted = `mount`.include?(Dir.pwd)
+
+    testcase_ok = true
+    if mounted
+        fail("ERROR: bindfs mounted although it should have refused to start")
+        system(umount_cmd + ' mnt')
+        testcase_ok = false
+    end
+    if status.success?
+        fail("ERROR: bindfs exited successfully although it should have failed")
+        testcase_ok = false
+    end
+    unless output.include?(expected_message)
+        fail("ERROR: expected the error output to contain `#{expected_message}' but it was:\n#{output}")
+        testcase_ok = false
+    end
+
+    Dir.chdir '..'
+    unless system "rm -Rf #{TESTDIR_NAME}"
+        fail!("ERROR: failed to clear test directory")
+    end
+
+    if testcase_ok
+        puts "OK"
+    else
+        exit! 1
+    end
+end
+
 # Like testenv but skips the test if not running as root
 def root_testenv(bindfs_args, options = {}, &block)
     if Process.uid != 0

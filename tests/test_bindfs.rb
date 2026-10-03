@@ -992,6 +992,41 @@ testenv("", :title => "socket files") do
   end
 end
 
+# File filters
+
+testenv("--file-filter=name=.zfs --file-filter=name-glob=*.tmp", :title => "--file-filter can be repeated") do
+    mkdir('src/.zfs')
+    touch('src/a.tmp')
+    touch('src/keep')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
+end
+
+testenv("-o file-filter=name=.zfs,file-filter=name-glob=*.tmp", :title => "file-filter can be repeated in -o") do
+    mkdir('src/.zfs')
+    touch('src/a.tmp')
+    touch('src/keep')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
+end
+
+testenv("--file-filter=name=.zfs -o file-filter=name=other", :title => "--file-filter and -o file-filter combine") do
+    mkdir('src/.zfs')
+    touch('src/other')
+    touch('src/keep')
+
+    assert { Dir.entries('mnt').sort == ['.', '..', 'keep'] }
+end
+
+bindfs_rejects("--file-filter=.zfs", "invalid --file-filter '.zfs'")
+bindfs_rejects("--file-filter=nmae=x", "invalid --file-filter 'nmae=x'")
+bindfs_rejects("--file-filter=name=", "empty name")
+bindfs_rejects("--file-filter=type=dir", "invalid --file-filter 'type=dir'")
+bindfs_rejects("--file-filter=type=folder:name=x", "unknown file type")
+bindfs_rejects("--file-filter=name=a/b", "not supported")
+bindfs_rejects("--file-filter=name=ok --file-filter=bogus", "invalid --file-filter 'bogus'")
+bindfs_rejects("-o file-filter=bogus", "invalid --file-filter 'bogus'")
+
 # FIXME: this stuff around testenv is a hack, and testenv may also exit(), which defeats the 'ensure' below.
 # the test setup ought to be refactored. It might well use MiniTest or something.
 # TODO: support FreeBSD in this test (different group management commands)
