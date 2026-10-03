@@ -1084,7 +1084,9 @@ testenv("--file-filter=name=.zfs", :title => "file-filter: other files are unaff
     assert { File.read('mnt/a') == 'a' }
     File.write('mnt/a', 'changed')
     assert { File.read('src/a') == 'changed' }
-    File.open('mnt/a', 'a') { |f| f.write('+') }
+    # Read-write: FreeBSD's fusefs cannot append through a write-only
+    # handle (EBADF), with or without filters.
+    File.open('mnt/a', 'r+') { |f| f.seek(0, IO::SEEK_END); f.write('+') }
     assert { File.read('mnt/a') == 'changed+' }
     File.rename('mnt/a', 'mnt/d/b')
     assert { File.read('src/d/b') == 'changed+' }
