@@ -37,6 +37,7 @@ int main(int argc, char *argv[])
     }
     return 0;
 #else
+    (void)argv;
     printf("renameat2 not available\n");
     return 3;
 #endif
