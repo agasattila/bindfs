@@ -79,9 +79,10 @@ bool filefilter_add_spec(FileFilter *f, const char *spec, const char **err);
 /*
  * Tests a single name. `type` is one FFT_* bit, or FFT_UNKNOWN.
  *
- * Names that libfuse generates for unlinked-but-open files (".fuse_hidden"
- * followed by 16 hex digits) never match, otherwise a filter that covers
- * them would make it impossible to delete an open file.
+ * The temporary names under which unlinked-but-open files are kept never
+ * match, otherwise a filter that covers them would make it impossible to
+ * delete an open file: libfuse's ".fuse_hidden" followed by 16 hex digits,
+ * and with fuse-t, ".nfs." followed by 8 hex digits, '.' and 4 hex digits.
  */
 FFResult filefilter_match(const FileFilter *f, const char *name, FFType type);
 

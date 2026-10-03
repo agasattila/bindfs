@@ -398,6 +398,26 @@ static void fuse_hidden_suite(void)
     TEST_ASSERT(!filefilter_hides_entry(f, ".fuse_hidden0000000200000001", FFT_REG, NULL, NULL));
     TEST_ASSERT(filefilter_hides_entry(f, ".fuse_hidden_secret", FFT_REG, NULL, NULL));
     filefilter_destroy(f);
+
+    /* fuse-t's NFS "silly rename" names are exempt only with fuse-t. */
+    f = FILTER("name-glob=.*");
+#ifdef HAVE_FUSE_T
+    const FFResult nfs_expected = FF_NO_MATCH;
+#else
+    const FFResult nfs_expected = FF_MATCH;
+#endif
+    expect_match(f, ".nfs.20051025.66d9", FFT_REG, nfs_expected);
+    expect_match(f, ".nfs.0123abcd.ef01", FFT_UNKNOWN, nfs_expected);
+    expect_match(f, ".nfs.secret", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.20051025", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.20051025.66d", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.20051025.66d9a", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.2005102.566d9", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.2005102g.66d9", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.20051025-66d9", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs.20051025.66D9", FFT_REG, FF_MATCH);
+    expect_match(f, ".nfs20051025.66d9", FFT_REG, FF_MATCH);
+    filefilter_destroy(f);
 }
 
 static void check_path_untyped_suite(void)
