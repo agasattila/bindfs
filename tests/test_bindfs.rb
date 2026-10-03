@@ -784,6 +784,8 @@ testenv("", :title => "many files in a directory") do
 end
 
 if $have_fuse_29 || $have_fuse_3
+  # Skipped with fuse-t: bindfs is built without lock forwarding there and
+  # refuses --enable-lock-forwarding ("must be compiled with FUSE 2.9.0 or newer").
   testenv("--enable-lock-forwarding --multithreaded", :title => "lock forwarding") do
     File.write('src/file', 'some contents for fcntl lockng')
     # (this test passes with an empty file as well, but this way is clearer)
@@ -806,7 +808,7 @@ if $have_fuse_29 || $have_fuse_3
     # fcntl locking
     system("#{$tests_dir}/fcntl_locker src/file mnt/file")
     raise "fcntl lock sharing test failed" unless $?.success?
-  end
+  end unless $fuse_t
 
   testenv("--disable-lock-forwarding", :title => "no lock forwarding") do
     File.write('src/file', 'some contents for fcntl lockng')
