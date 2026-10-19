@@ -151,6 +151,48 @@ jobs:
           make install DESTDIR="${PWD}"/ROOT/
           find ROOT/ | sort | xargs ls -ld
 
+  dist:
+    name: Build and test from the `make dist` tarball
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install build dependencies
+        run: |-
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            autoconf \
+            automake \
+            libfuse3-dev \
+            libtool \
+            pkg-config \
+            valgrind
+
+      - name: Checkout Git branch
+        uses: actions/checkout@v4
+
+      - name: 'Make the tarball'
+        run: |-
+          set -x
+          ./autogen.sh
+          ./configure
+          make dist
+
+      # In-tree build of the unpacked tarball: the Ruby tests find the
+      # binary by a relative path, so `make distcheck` (out of tree) can't
+      # run them.
+      - name: 'Build, test and install from the tarball'
+        env:
+          CFLAGS: -Werror
+        run: |-
+          set -x
+          mkdir unpacked
+          tar -xzf bindfs-*.tar.gz -C unpacked
+          cd unpacked/bindfs-*/
+          ./configure
+          make "-j$(nproc)"
+          make check
+          make install DESTDIR="${PWD}"/ROOT/
+          test -f ROOT/usr/local/share/man/man1/bindfs.1
+
   vagrant:
     name: Run Vagrant tests
     runs-on: ubuntu-24.04
