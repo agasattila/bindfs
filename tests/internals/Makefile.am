@@ -13,3 +13,4 @@ test_rate_limiter_CFLAGS = ${my_CFLAGS}
 test_rate_limiter_LDADD = ${my_LDFLAGS}
 
 TESTS = test_internals_valgrind.sh test_rate_limiter_valgrind.sh
+EXTRA_DIST = $(TESTS)
