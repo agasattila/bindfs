@@ -30,22 +30,26 @@ require 'tempfile'
 
 include Errno
 
-$have_fuse_3 = Proc.new do
-  system("pkg-config --exists fuse3")
-  $?.success?
+# The FUSE version bindfs was compiled against, as [major, minor]. It comes
+# from the binary because pkg-config only says which libfuse development
+# files are installed, and there may be more than one.
+$bindfs_fuse_version = Proc.new do
+  out = `#{EXECUTABLE_PATH} --fuse-version`
+  m = out.match(/compile-time version (\d+)\.(\d+)/)
+  raise "failed to get the FUSE version from `bindfs --fuse-version`: #{out.inspect}" unless m
+  [m[1].to_i, m[2].to_i]
 end.call
+puts "Testing bindfs compiled against FUSE #{$bindfs_fuse_version.join('.')}"
+
+$have_fuse_3 = $bindfs_fuse_version[0] >= 3
+# The patch level is not part of the compile-time version, so this one
+# still asks pkg-config. It only matters with FUSE 3.
 $have_fuse_3_readdir_bug = $have_fuse_3 && Proc.new do
   system("pkg-config --max-version=3.10.1 fuse3")
   $?.success?
 end.call
 
-$have_fuse_29 = !$have_fuse_3 && !$fuse_t && Proc.new do
-  v = `pkg-config --modversion fuse`.split('.')
-  raise "failed to get FUSE version with pkg-config" if v.size < 2
-  v = v.map(&:to_i)
-  v = [2, 8, 0]
-  v[0] > 2 || (v[0] == 2 && v[1] >= 9)
-end.call
+$have_fuse_29 = !$have_fuse_3 && !$fuse_t && ($bindfs_fuse_version <=> [2, 9]) >= 0
 
 # FileUtils.chown turned out to be quite buggy in Ruby 1.8.7,
 # so we'll use File.chown instead.
@@ -520,7 +524,8 @@ testenv("", :title => "preserves inode numbers") do
     assert { File.stat('mnt/dir').ino == File.stat('src/dir').ino }
 end
 
-if $have_fuse3 && !$have_fuse_3_readdir_bug  # https://github.com/libfuse/libfuse/issues/583
+# Not on FreeBSD: there the inode numbers in readdir differ from the source's.
+if $have_fuse_3 && !$have_fuse_3_readdir_bug && `uname`.strip != 'FreeBSD'  # https://github.com/libfuse/libfuse/issues/583
     testenv("", :title => "preserves readdir inode numbers") do
         touch('src/file')
         mkdir('src/dir')
@@ -533,6 +538,32 @@ if $have_fuse3 && !$have_fuse_3_readdir_bug  # https://github.com/libfuse/libfus
 
         assert { inodes['file'] == File.stat('src/file').ino }
         assert { inodes['dir'] == File.stat('src/dir').ino }
+    end
+end
+
+# Rename flags reach bindfs only with FUSE 3, and renameat2() is Linux-only.
+if `uname`.strip == 'Linux' && $have_fuse_3
+    testenv("", :title => "rename with RENAME_EXCHANGE") do
+        File.write('src/a', 'a')
+        File.write('src/b', 'b')
+
+        out = `#{$tests_dir}/renameat2 exchange mnt/a mnt/b`
+        raise "renameat2 RENAME_EXCHANGE failed: #{out}" unless $?.success?
+        assert { File.read('src/a') == 'b' }
+        assert { File.read('src/b') == 'a' }
+    end
+
+    testenv("", :title => "rename with RENAME_NOREPLACE") do
+        File.write('src/a', 'a')
+        File.write('src/b', 'b')
+
+        assert { `#{$tests_dir}/renameat2 noreplace mnt/a mnt/b`.strip == 'EEXIST' }
+        assert { File.read('src/b') == 'b' }
+
+        out = `#{$tests_dir}/renameat2 noreplace mnt/a mnt/c`
+        raise "renameat2 RENAME_NOREPLACE failed: #{out}" unless $?.success?
+        assert { !File.exist?('src/a') }
+        assert { File.read('src/c') == 'a' }
     end
 end
 

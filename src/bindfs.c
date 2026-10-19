@@ -65,6 +65,10 @@
 #include <sys/xattr.h>
 #endif
 
+#ifdef __linux__
+#include <sys/syscall.h> // For __NR_renameat2
+#endif
+
 #ifdef HAVE_FUSE_3
 #ifndef __NR_renameat2
 #include <libgen.h> // For dirname(), basename()
