@@ -540,6 +540,32 @@ if $have_fuse3 && !$have_fuse_3_readdir_bug  # https://github.com/libfuse/libfus
     end
 end
 
+# Rename flags reach bindfs only with FUSE 3, and renameat2() is Linux-only.
+if `uname`.strip == 'Linux' && $have_fuse_3
+    testenv("", :title => "rename with RENAME_EXCHANGE") do
+        File.write('src/a', 'a')
+        File.write('src/b', 'b')
+
+        out = `#{$tests_dir}/renameat2 exchange mnt/a mnt/b`
+        raise "renameat2 RENAME_EXCHANGE failed: #{out}" unless $?.success?
+        assert { File.read('src/a') == 'b' }
+        assert { File.read('src/b') == 'a' }
+    end
+
+    testenv("", :title => "rename with RENAME_NOREPLACE") do
+        File.write('src/a', 'a')
+        File.write('src/b', 'b')
+
+        assert { `#{$tests_dir}/renameat2 noreplace mnt/a mnt/b`.strip == 'EEXIST' }
+        assert { File.read('src/b') == 'b' }
+
+        out = `#{$tests_dir}/renameat2 noreplace mnt/a mnt/c`
+        raise "renameat2 RENAME_NOREPLACE failed: #{out}" unless $?.success?
+        assert { !File.exist?('src/a') }
+        assert { File.read('src/c') == 'a' }
+    end
+end
+
 root_testenv("", :title => "setgid directories") do
     mkdir('mnt/dir')
     chmod("g+s", 'mnt/dir')
