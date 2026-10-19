@@ -67,7 +67,7 @@ def wait_for(options = {}, &condition)
 
     start_time = Time.now
     sleep_time = options[:initial_sleep]
-    while !`mount`.include?(`pwd`.strip)
+    while !condition.call
         sleep sleep_time
         sleep_time = [sleep_time * options[:sleep_ramp_up], options[:max_sleep]].min
         if Time.now - start_time > options[:max_time]
