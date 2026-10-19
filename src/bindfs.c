@@ -914,6 +914,14 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
             }
 
             path_buf.size -= file_len;
+        } else {
+            // Without readdirplus, libfuse only takes the inode number and
+            // the file type from `st`. Without `st`, it reports an unknown
+            // inode number, which e.g. FreeBSD (no readdirplus) and FUSE 2
+            // pass on to readdir() callers.
+            memset(&st, 0, sizeof(st));
+            st.st_ino = de->d_ino;
+            st.st_mode = DTTOIF(de->d_type);
         }
 
         // See issue #28 for why we pass a 0 offset to `filler` and ignore
@@ -924,9 +932,9 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         // errno in that case, so we zero it first and set it ourself if it
         // doesn't.
         #ifdef HAVE_FUSE_3
-        if (filler(buf, de->d_name, readdirplus ? &st : NULL, 0, fill_dir_flags) != 0) {
+        if (filler(buf, de->d_name, &st, 0, fill_dir_flags) != 0) {
         #else
-        if (filler(buf, de->d_name, readdirplus ? &st : NULL, 0) != 0) {
+        if (filler(buf, de->d_name, &st, 0) != 0) {
         #endif
             result = errno != 0 ? -errno : -EIO;
             break;
