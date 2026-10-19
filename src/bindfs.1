@@ -582,6 +582,12 @@ Some features relying on xattrs might not work properly on OS X
 (\fBhttps://github.com/mpartel/bindfs/issues/21\fP).
 For instance, Finder tags seem to work but comments might not.
 
+On FreeBSD, creating a hard link through the mount fails with \fBEIO\fP,
+although the link is created. FreeBSD's fusefs expects the reply to refer
+to the node of the original file, but the libfuse high-level API that
+bindfs uses gives every name its own node. The kernel logs
+"FUSE protocol violation ... Assigned wrong inode for a hard link".
+
 Please report bugs and/or send pull requests to
 \fBhttps://github.com/mpartel/bindfs/issues\fP.
 
