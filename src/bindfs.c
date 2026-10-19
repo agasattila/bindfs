@@ -1330,6 +1330,33 @@ static int bindfs_utimens(const char *path, const struct timespec ts[2])
     return 0;
 }
 
+/*
+ * Opens a file in the source directory for bindfs_open() and bindfs_create().
+ *
+ * FreeBSD's fusefs may read through a file handle that was opened
+ * write-only: a cached write that does not cover whole blocks reads the rest
+ * of the block first, which the FUSE protocol allows. On a backing file
+ * opened O_WRONLY, that read fails with EBADF, and so does the write. So on
+ * FreeBSD, regular files (existing or about to be created) are opened
+ * read-write when possible, and with the requested flags otherwise, e.g. if
+ * the mounter may not read the file.
+ */
+static int open_backing_file(const char *path, int flags, mode_t mode)
+{
+#ifdef __FreeBSD__
+    struct stat st;
+    if ((flags & O_ACCMODE) == O_WRONLY) {
+        bool regular = (stat(path, &st) == 0) ? S_ISREG(st.st_mode) : (flags & O_CREAT) != 0;
+        if (regular) {
+            int fd = open(path, (flags & ~O_ACCMODE) | O_RDWR, mode);
+            if (fd != -1)
+                return fd;
+        }
+    }
+#endif
+    return open(path, flags, mode);
+}
+
 static int bindfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     int fd;
@@ -1350,7 +1377,7 @@ static int bindfs_create(const char *path, mode_t mode, struct fuse_file_info *f
     }
 #endif
 
-    fd = open(real_path, flags, mode & 0777);
+    fd = open_backing_file(real_path, flags, mode & 0777);
     if (fd == -1) {
         free(real_path);
         return -errno;
@@ -1383,7 +1410,7 @@ static int bindfs_open(const char *path, struct fuse_file_info *fi)
 #endif
 #endif
 
-    fd = open(real_path, flags);
+    fd = open_backing_file(real_path, flags, 0);
     free(real_path);
     if (fd == -1)
         return -errno;
