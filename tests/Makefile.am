@@ -13,4 +13,6 @@ odirect_write_SOURCES = odirect_write.c
 test_dir_rewind_SOURCES = test_dir_rewind.c
 
 TESTS = test_bindfs.rb
+EXTRA_DIST = test_bindfs.rb common.rb ruby18_hacks.rb \
+	stress_test.rb test_concurrent.rb test_block_devices_as_files.rb
 SUBDIRS = internals

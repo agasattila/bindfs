@@ -9,7 +9,7 @@ AM_CPPFLAGS = ${my_CPPFLAGS} ${fuse_CFLAGS} ${fuse3_CFLAGS} ${fuse_t_CFLAGS}
 AM_CFLAGS = ${my_CFLAGS}
 bindfs_LDADD = ${fuse_LIBS} ${fuse3_LIBS} ${fuse_t_LIBS} ${my_LDFLAGS}
 
-man_MANS = bindfs.1
+dist_man_MANS = bindfs.1
 
 if INSTALL_MACOS_FS_LINK
 bindfs_BUNDLEDIR = $(DESTDIR)/Library/Filesystems/bindfs.fs
