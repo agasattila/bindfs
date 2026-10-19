@@ -536,6 +536,29 @@ if $have_fuse3 && !$have_fuse_3_readdir_bug  # https://github.com/libfuse/libfus
     end
 end
 
+# Writes that do not cover whole blocks through a write-only handle.
+# FreeBSD's fusefs reads the rest of the block through that handle (#20).
+testenv("", :title => "partial writes through a write-only handle") do
+    File.write('src/a', 'abc')
+    File.write('src/b', 'abc')
+
+    File.open('mnt/a', File::WRONLY | File::APPEND) { |f| f.write('+') }  # codespell:ignore wronly
+    assert { File.read('src/a') == 'abc+' }
+
+    File.open('mnt/b', File::WRONLY) { |f| f.seek(1); f.write('X') }  # codespell:ignore wronly
+    assert { File.read('src/b') == 'aXc' }
+end
+
+# A file the mounter may write but not read can still be opened write-only.
+nonroot_testenv("", :title => "write-only open of a file without read permission") do
+    File.write('src/c', 'abc')
+    chmod(0200, 'src/c')
+
+    File.open('mnt/c', File::WRONLY | File::TRUNC) { |f| f.write('new') }  # codespell:ignore wronly
+    chmod(0600, 'src/c')
+    assert { File.read('src/c') == 'new' }
+end
+
 root_testenv("", :title => "setgid directories") do
     mkdir('mnt/dir')
     chmod("g+s", 'mnt/dir')
